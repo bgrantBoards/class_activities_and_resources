@@ -1,3 +1,4 @@
+import binascii
 import rclpy
 from threading import Thread
 from rclpy.node import Node
@@ -8,6 +9,10 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 from geometry_msgs.msg import Twist, Vector3
+
+# import installed libraries
+from simple_pid import PID
+# from vector_2d import Vector, VectorPolar
 
 class BallTracker(Node):
     """ The BallTracker is a Python object that encompasses a ROS node 
@@ -26,6 +31,19 @@ class BallTracker(Node):
         thread = Thread(target=self.loop_wrapper)
         thread.start()
 
+        # image processing params
+        self.red_lower_thresh = 0    # red
+        self.red_upper_thresh = 10
+        self.gre_lower_thresh = 75   # green
+        self.gre_upper_thresh = 255
+        self.blu_lower_thresh = 0    # blue
+        self.blu_upper_thresh = 66
+
+        # follower parameters
+        # self.approach_threshold = 1.1 # (m) dist to keep from object
+        # self.lin_pid    = PID(Kp=0.1, Ki=0, Kd=0.05, setpoint=0)
+        self.steer_pid  = PID(Kp=0.1, Ki=0, Kd=0.05, setpoint=0)    # PID controller for steering
+
     def process_image(self, msg):
         """ Process image messages from ROS and stash them in an attribute
             called cv_image for subsequent processing """
@@ -39,9 +57,40 @@ class BallTracker(Node):
         cv2.namedWindow('binary_window')
         cv2.namedWindow('image_info')
         cv2.setMouseCallback('video_window', self.process_mouse_event)
+
+        # create sliders with callbacks to change threshold members
+        cv2.createTrackbar('red lower bound', 'binary_window', self.red_lower_thresh, self.red_upper_thresh, self.set_red_lower)
+        cv2.createTrackbar('red upper bound', 'binary_window', self.red_upper_thresh, 255, self.set_red_upper)
+        cv2.createTrackbar('green lower bound', 'binary_window', self.gre_lower_thresh, 255, self.set_gre_lower)
+        cv2.createTrackbar('green upper bound', 'binary_window', self.gre_upper_thresh, 255, self.set_gre_upper)
+        cv2.createTrackbar('blue lower bound', 'binary_window', self.blu_lower_thresh, 255, self.set_blu_upper)
+        cv2.createTrackbar('blue upper bound', 'binary_window', self.blu_upper_thresh, 255, self.set_blu_upper)
+        
+        # mouse callback
+        cv2.setMouseCallback('video_window', self.process_mouse_event)
+
+        # initiate running loop
         while True:
             self.run_loop()
             time.sleep(0.1)
+    
+    def set_red_upper(self, val):
+        self.red_upper_thresh = val
+    
+    def set_red_lower(self, val):
+        self.red_lower_thresh = val
+    
+    def set_gre_upper(self, val):
+        self.gre_upper_thresh = val
+    
+    def set_gre_lower(self, val):
+        self.gre_lower_thresh = val
+    
+    def set_blu_upper(self, val):
+        self.blu_upper_thresh = val
+    
+    def set_blu_lower(self, val):
+        self.blu_lower_thresh = val
 
     def process_mouse_event(self, event, x,y,flags,param):
         """ Process mouse events so that you can see the color values
@@ -55,15 +104,45 @@ class BallTracker(Node):
                     (0,0,0))
 
     def run_loop(self):
-        # NOTE: only do cv2.imshow and cv2.waitKey in this function 
+        # NOTE: only do cv2.imshow and cv2.waitKey in this function
         if not self.cv_image is None:
-            self.binary_image = cv2.inRange(self.cv_image, (128,128,128), (255,255,255))
-            print(self.cv_image.shape)
+            lower_thresholds = (self.red_lower_thresh, self.gre_lower_thresh, self.blu_lower_thresh)
+            upper_thresholds = (self.red_upper_thresh, self.gre_upper_thresh, self.blu_upper_thresh)
+            self.binary_image = cv2.inRange(self.cv_image, lower_thresholds, upper_thresholds)
+
+            # find center of white blob in binary image
+            if 255 in self.binary_image:
+                locations = np.where(self.binary_image == 255)
+                y = np.mean(locations[0])
+                x = np.mean(locations[1])
+                print(x, y)
+
+            #print(self.cv_image.shape)
             cv2.imshow('video_window', self.cv_image)
             cv2.imshow('binary_window', self.binary_image)
             if hasattr(self, 'image_info_window'):
                 cv2.imshow('image_info', self.image_info_window)
             cv2.waitKey(5)
+
+    def command_motors(self, x, y):
+        drive_msg = Twist()
+
+        # use PID control to slow down approach to target
+        drive_msg.linear.x = 0.1
+
+
+        if x > (self.cv_image.shape[1]/2):
+            drive_msg.angular.z = -1.0
+        elif x < (self.cv_image.shape[1]/2):
+            drive_msg.angular.z = -1.0
+        else:
+            drive_msg.angular.z = 0
+
+        self.pub.publish(drive_msg)
+
+
+
+
 
 if __name__ == '__main__':
     node = BallTracker("/camera/image_raw")
